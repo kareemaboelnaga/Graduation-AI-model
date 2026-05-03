@@ -96,8 +96,7 @@ def generateImage():
     cv2.imwrite(static_path, superimposed_img)
     # Print the list of files in the static folder
     print(os.listdir(app.config['STATIC_FOLDER']))
-    host = os.environ.get('HOST', f'http://localhost:{os.environ.get("PORT", 5000)}')
-    image_url = f'{host}/{image_name}'
+    image_url = f'{request.host_url}{image_name}'
     response_data = {'image_url': image_url, "Predicted class": predicted_class}
 
     # Remove the temporary file
