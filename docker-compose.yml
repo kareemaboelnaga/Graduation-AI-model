@@ -1,0 +1,16 @@
+services:  
+  
+  ai:
+
+    build: .
+
+    image: ai
+
+    container_name: ai
+    
+    ports:
+      - "5000:5000"
+    
+    volumes:
+      - ./AI:/ai
+    
