@@ -1,143 +1,122 @@
 import time
-import glob
-import os
-import tempfile
-
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import numpy as np
 import cv2
 import tensorflow as tf
 from tensorflow.keras.models import load_model
+from PIL import Image
+import tempfile
+import os
+import base64
 
-# ── App setup ──────────────────────────────────────────────────────────────────
+
 app = Flask(__name__)
 CORS(app)
 
-# Use /tmp so it works on Railway, Render, and any read-only filesystem host
-STATIC_FOLDER = '/tmp/static'
-os.makedirs(STATIC_FOLDER, exist_ok=True)
+STATIC_FOLDER = 'static'
+app.config['STATIC_FOLDER'] = STATIC_FOLDER
 
-# Load the model once at startup (not on every request)
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'chexnet_model.h5')
-model = load_model(MODEL_PATH)
-print("✅ Model loaded successfully")
-
-CLASS_LABELS = ['Normal', 'Pneumonia']
-
-
-# ── Routes ─────────────────────────────────────────────────────────────────────
+# Check if the 'static' folder exists, and create it if not
+if not os.path.exists(STATIC_FOLDER):
+    os.makedirs(STATIC_FOLDER)
 
 @app.route('/', methods=['GET'])
 def welcome():
     return "Welcome -- It's our Graduation AI Model"
 
-
 @app.route('/', methods=['POST'])
-def generate_image():
+def generateImage():
     if 'image_data' not in request.files:
-        return jsonify({'error': 'No image file provided'}), 400
+        return jsonify({'error': 'No image file provided'})
 
     image_file = request.files['image_data']
-    temp_path = None
 
-    try:
-        # Save upload to a temp file
-        temp_path = save_temporary_file(image_file)
+    # Save the uploaded file to a temporary location
+    temp_path = save_temporary_file(image_file)
 
-        # Read original image
-        original_img = cv2.imread(temp_path)
-        if original_img is None:
-            return jsonify({'error': 'Failed to read the image file'}), 400
+    # Load the model
+    model = load_model('chexnet_model.h5')
 
-        # Pre-process for model
-        img = cv2.resize(original_img, (224, 224))
-        img_array = tf.keras.preprocessing.image.img_to_array(img)
-        img_array = tf.expand_dims(img_array, 0)
+    # Read the original image
+    original_img = cv2.imread(temp_path)
 
-        # Predict
-        predictions = model.predict(img_array)
-        score = tf.nn.softmax(predictions[0])
-        predicted_class = CLASS_LABELS[tf.argmax(score).numpy()]
-        confidence = float(100 * tf.reduce_max(score))
+    if original_img is None:
+        print(f"Error: Unable to read the image at {temp_path}")
+        return jsonify({'error': 'Failed to read the image file'})
 
-        print(f"Predicted class : {predicted_class}")
-        print(f"Confidence      : {confidence:.2f}%")
+    # Preprocess the image for the model
+    img = cv2.resize(original_img, (224, 224))
+    img_array = tf.keras.preprocessing.image.img_to_array(img)
+    img_array = tf.expand_dims(img_array, 0)
 
-        # ── Grad-CAM heatmap ──────────────────────────────────────────────────
-        last_conv_layer = model.get_layer('conv5_block16_concat')
-        cam_model = tf.keras.Model(
-            inputs=model.input,
-            outputs=(last_conv_layer.output, model.output)
-        )
+    # Make predictions
+    predictions = model.predict(img_array)
+    class_labels = ['Normal', 'Pneumonia']
+    score = tf.nn.softmax(predictions[0])
+    predicted_class = class_labels[tf.argmax(score)]
+    confidence = 100 * tf.reduce_max(score)
 
-        with tf.GradientTape() as tape:
-            last_conv_output, preds = cam_model(img_array)
-            class_output = preds[:, tf.argmax(score)]
+    print(f"Predicted class: {predicted_class}")
+    print(f"Confidence: {confidence:.2f}%")
 
-        grads = tape.gradient(class_output, last_conv_output)
-        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+    # Get the last convolutional layer
+    last_conv_layer = model.get_layer('conv5_block16_concat')
 
-        last_conv_output = last_conv_output[0]
-        heatmap = last_conv_output @ pooled_grads[..., tf.newaxis]
-        heatmap = tf.squeeze(heatmap)
-        heatmap = tf.maximum(heatmap, 0)
+    # Create a model that outputs the last convolutional layer and the final model output
+    cam_model = tf.keras.Model(inputs=model.input, outputs=(last_conv_layer.output, model.output))
 
-        max_val = tf.reduce_max(heatmap)
-        if max_val > 0:
-            heatmap = heatmap / max_val
+    # Use GradientTape to compute gradients
+    x = img_array  # Use the preprocessed image as input
+    with tf.GradientTape() as tape:
+        last_conv_output, preds = cam_model(x)
+        class_output = preds[:, tf.argmax(score)]
 
-        # Resize & overlay heatmap on original image
-        heatmap_np = cv2.resize(
-            heatmap.numpy(),
-            (original_img.shape[1], original_img.shape[0])
-        )
-        heatmap_np = (heatmap_np * 255).astype(np.uint8)
-        heatmap_colored = cv2.applyColorMap(heatmap_np, cv2.COLORMAP_JET)
-        superimposed = cv2.addWeighted(original_img, 0.6, heatmap_colored, 0.4, 0)
+    # Compute gradients and pooled gradients
+    grads = tape.gradient(class_output, last_conv_output)
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
 
-        # Save result
-        image_name = f'superimposed_{time.time()}.png'
-        static_path = os.path.join(STATIC_FOLDER, image_name)
-        cv2.imwrite(static_path, superimposed)
+    # Multiply the last convolutional layer's output with pooled gradients to get the heatmap
+    last_conv_output = last_conv_output[0]
+    heatmap = last_conv_output @ pooled_grads[..., tf.newaxis]
+    heatmap = tf.squeeze(heatmap)
+    heatmap = tf.maximum(heatmap, 0)
+    heatmap /= tf.reduce_max(heatmap)
 
-        return jsonify({
-            'image_url': f'/static/{image_name}',
-            'predicted_class': predicted_class,
-            'confidence': f'{confidence:.2f}%'
-        })
+    # Resize heatmap to match the original image
+    heatmap = cv2.resize(heatmap.numpy(), (original_img.shape[1], original_img.shape[0]))
 
-    except Exception as e:
-        print(f"Error: {e}")
-        return jsonify({'error': str(e)}), 500
+    # Apply the heatmap on the original image
+    heatmap = (heatmap * 255).astype(np.uint8)
+    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+    superimposed_img = cv2.addWeighted(original_img, 0.6, heatmap, 0.4, 0)
+    image_name = f'superimposed_{time.time()}.png'
+    static_path = os.path.join(app.config['STATIC_FOLDER'], image_name)
+    cv2.imwrite(static_path, superimposed_img)
+    # Print the list of files in the static folder
+    print(os.listdir(app.config['STATIC_FOLDER']))
+    image_url = f'http://localhost:5000/{image_name}'
+    response_data = {'image_url': image_url, "Predicted class": predicted_class}
 
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
+    # Remove the temporary file
+    os.remove(temp_path)
 
+    return jsonify(response_data) 
 
-@app.route('/static/<path:filename>')
+@app.route('/<path:filename>')
 def serve_static(filename):
     if filename == 'latest':
-        files = glob.glob(os.path.join(STATIC_FOLDER, '*.png'))
-        if not files:
-            return jsonify({'error': 'No images available'}), 404
+        # Get the latest modified file in the static folder
+        files = glob.glob(os.path.join(app.config['STATIC_FOLDER'], '*.png'))
         latest_file = max(files, key=os.path.getmtime)
-        return send_from_directory(STATIC_FOLDER, os.path.basename(latest_file))
-    return send_from_directory(STATIC_FOLDER, filename)
-
-
-# ── Helpers ────────────────────────────────────────────────────────────────────
+        return send_from_directory(app.config['STATIC_FOLDER'], os.path.basename(latest_file))
+    else:
+        return send_from_directory(app.config['STATIC_FOLDER'], filename)
 
 def save_temporary_file(file):
-    suffix = os.path.splitext(file.filename)[-1] or '.tmp'
-    _, temp_path = tempfile.mkstemp(suffix=suffix)
+    _, temp_path = tempfile.mkstemp()
     file.save(temp_path)
     return temp_path
 
-
-# ── Entry point ────────────────────────────────────────────────────────────────
-
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0')
