@@ -43,4 +43,4 @@ EXPOSE 5000
 # -----------------------------
 # Run application
 # -----------------------------
-CMD ["python", "Model.py"]
+CMD ["gunicorn", "-b", "0.0.0.0:5000", "Model:app"]
