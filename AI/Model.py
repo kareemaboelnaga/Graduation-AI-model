@@ -9,6 +9,7 @@ from PIL import Image
 import tempfile
 import os
 import base64
+import glob
 
 
 app = Flask(__name__)
@@ -95,7 +96,8 @@ def generateImage():
     cv2.imwrite(static_path, superimposed_img)
     # Print the list of files in the static folder
     print(os.listdir(app.config['STATIC_FOLDER']))
-    image_url = f'http://localhost:5000/{image_name}'
+    host = os.environ.get('HOST', f'http://localhost:{os.environ.get("PORT", 5000)}')
+    image_url = f'{host}/{image_name}'
     response_data = {'image_url': image_url, "Predicted class": predicted_class}
 
     # Remove the temporary file
@@ -119,4 +121,5 @@ def save_temporary_file(file):
     return temp_path
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0')
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
