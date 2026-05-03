@@ -36,9 +36,6 @@ def generateImage():
     # Save the uploaded file to a temporary location
     temp_path = save_temporary_file(image_file)
 
-    # Load the model
-    model = load_model('chexnet_model.h5')
-
     # Read the original image
     original_img = cv2.imread(temp_path)
 
