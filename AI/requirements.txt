@@ -2,7 +2,7 @@ Flask~=2.3.2
 flask-cors==4.0.0
 python-dotenv==1.0.0
 tensorflow==2.15.0
-opencv-python-headless
+Image==1.5.33
+opencv-contrib-python
+matplotlib
 numpy
-Pillow
-gunicorn
