@@ -6,4 +6,3 @@ Image==1.5.33
 opencv-contrib-python
 matplotlib
 numpy
-gunicorn
